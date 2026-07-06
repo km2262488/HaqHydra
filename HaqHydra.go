@@ -252,7 +252,7 @@ func (am *AttackManager) openConnection(port int, limit int) {
 	if err != nil {
 		am.atomicInc(&errorCount)
 		am.log("Failed to establish connection to %s: %v", address, err)
-		return
+		return 
 	}
 
 	if tcpConn, ok := conn.(*net.TCPConn); ok {
@@ -261,13 +261,14 @@ func (am *AttackManager) openConnection(port int, limit int) {
 	}
 
 	go func() {
-		am.wg.Add(1) 
-		defer wg.Done()
-		defer conn.Close()
+		am.wg.Add(1) // Panggil Add di awal goroutine
+		defer func() {
+			wg.Done() // Pastikan Done dipanggil saat goroutine keluar
+		}()
 
 		if am.attackType == "http" && am.atomicGet(&activeConnections) >= uint64(limit) {
 			am.log("Connection limit (%d) reached for %s. Closing connection.", limit, address)
-			return
+			return // defer wg.Done() akan dieksekusi
 		}
 
 		am.atomicInc(&activeConnections)
