@@ -260,8 +260,8 @@ func (am *AttackManager) openConnection(port int, limit int) {
 		tcpConn.SetKeepAlivePeriod(30 * time.Second)
 	}
 
-	am.wg.Add(1) 
 	go func() {
+		am.wg.Add(1) 
 		defer wg.Done()
 		defer conn.Close()
 
