@@ -260,14 +260,15 @@ func (am *AttackManager) openConnection(port int, limit int) {
 		tcpConn.SetKeepAlivePeriod(30 * time.Second)
 	}
 
+	if am.attackType == "http" && am.atomicGet(&activeConnections) >= uint64(limit) {
+		conn.Close()
+		return
+	}
+
 	am.wg.Add(1)
 	go func() {
 		defer wg.Done()
 		defer conn.Close()
-
-		if am.atomicGet(&activeConnections) >= uint64(limit) && am.attackType == "http" {
-			return
-		}
 
 		am.atomicInc(&activeConnections)
 		am.log("New connection opened to %s. Active: %d", address, am.atomicGet(&activeConnections))
